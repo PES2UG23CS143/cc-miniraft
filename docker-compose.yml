@@ -1,0 +1,106 @@
+networks:
+  raft-net:
+    driver: bridge
+
+services:
+  replica1:
+    build: ./replica1
+    container_name: replica1
+    environment:
+      - REPLICA_ID=replica1
+      - REPLICA_PORT=4001
+      - PEERS=http://replica2:4002,http://replica3:4003
+    volumes:
+      - ./replica1:/app
+      - /app/node_modules
+      - ./replica1/data:/app/data
+    ports:
+      - "4001:4001"
+    networks:
+      - raft-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  replica2:
+    build: ./replica2
+    container_name: replica2
+    environment:
+      - REPLICA_ID=replica2
+      - REPLICA_PORT=4002
+      - PEERS=http://replica1:4001,http://replica3:4003
+    volumes:
+      - ./replica2:/app
+      - /app/node_modules
+      - ./replica2/data:/app/data
+    ports:
+      - "4002:4002"
+    networks:
+      - raft-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4002/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  replica3:
+    build: ./replica3
+    container_name: replica3
+    environment:
+      - REPLICA_ID=replica3
+      - REPLICA_PORT=4003
+      - PEERS=http://replica1:4001,http://replica2:4002
+    volumes:
+      - ./replica3:/app
+      - /app/node_modules
+      - ./replica3/data:/app/data
+    ports:
+      - "4003:4003"
+    networks:
+      - raft-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  gateway:
+    build: ./gateway
+    container_name: gateway
+    environment:
+      - GATEWAY_PORT=3000
+      - REPLICAS=http://replica1:4001,http://replica2:4002,http://replica3:4003
+    volumes:
+      - ./gateway:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    networks:
+      - raft-net
+    depends_on:
+      replica1:
+        condition: service_healthy
+      replica2:
+        condition: service_healthy
+      replica3:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "8080:80"
+    networks:
+      - raft-net
+    depends_on:
+      - gateway
+    restart: unless-stopped
