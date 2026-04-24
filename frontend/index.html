@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Distributed Drawing Board — Mini-RAFT</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0d0f1a;
+      color: #e2e8f0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 16px;
+      background: #13162b;
+      border-bottom: 1px solid #252a47;
+      flex-shrink: 0;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    header h1 {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #818cf8;
+      white-space: nowrap;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .toolbar label { font-size: 0.75rem; color: #94a3b8; }
+
+    .color-swatch {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: transform 0.1s, border-color 0.1s;
+    }
+    .color-swatch:hover  { transform: scale(1.2); }
+    .color-swatch.active { border-color: #fff; transform: scale(1.15); }
+
+    input[type=range] { width: 80px; accent-color: #818cf8; cursor: pointer; }
+
+    .btn {
+      padding: 4px 12px;
+      border-radius: 6px;
+      border: 1px solid;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.8; }
+    .btn-eraser { background: #1e2240; border-color: #4f5b93; color: #a5b4fc; }
+    .btn-clear  { background: #7f1d1d; border-color: #991b1b; color: #fca5a5; }
+    .btn-eraser.active { background: #4f5b93; }
+
+    /* ── Main layout ── */
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    canvas#board {
+      flex: 1;
+      display: block;
+      background: #ffffff;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 230px;
+      min-width: 230px;
+      background: #13162b;
+      border-left: 1px solid #252a47;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .sb-section {
+      padding: 12px 14px;
+      border-bottom: 1px solid #1e2240;
+    }
+
+    .sb-title {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #475569;
+      margin-bottom: 8px;
+    }
+
+    /* connection badge */
+    .conn-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.78rem;
+    }
+    .dot {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-green  { background: #4ade80; box-shadow: 0 0 6px #4ade80aa; }
+    .dot-red    { background: #f87171; }
+    .dot-yellow { background: #fbbf24; }
+
+    /* node cards */
+    .node-card {
+      background: #0d0f1a;
+      border: 1px solid #1e2240;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 6px;
+      font-size: 0.72rem;
+    }
+    .node-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 3px;
+    }
+    .node-id { font-weight: 700; color: #a5b4fc; }
+
+    .badge {
+      font-size: 0.6rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+    }
+    .b-leader    { background: #14532d; color: #4ade80; }
+    .b-follower  { background: #1e3a5f; color: #60a5fa; }
+    .b-candidate { background: #451a03; color: #fb923c; }
+    .b-down      { background: #27272a; color: #71717a; }
+
+    .node-meta { color: #64748b; line-height: 1.6; }
+
+    /* event log */
+    .log-wrap {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 14px;
+    }
+    .log-entry {
+      font-size: 0.68rem;
+      font-family: monospace;
+      padding: 2px 0;
+      border-bottom: 1px solid #1a1d2e;
+      color: #94a3b8;
+      word-break: break-all;
+    }
+    .log-election { color: #fb923c; }
+    .log-commit   { color: #4ade80; }
+    .log-failover { color: #f87171; }
+    .log-info     { color: #818cf8; }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2d3154; border-radius: 2px; }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════ HEADER ══════════════════════════════ -->
+<header>
+  <h1>🖊 Distributed Drawing Board · Mini-RAFT</h1>
+
+  <div class="toolbar">
+    <label>Color</label>
+    <div id="swatches" style="display:flex;gap:5px;"></div>
+
+    <label>Size</label>
+    <input type="range" id="sizeRange" min="1" max="32" value="5" />
+    <span id="sizeLabel" style="font-size:.75rem;color:#94a3b8;min-width:20px">5</span>
+
+    <button class="btn btn-eraser" id="eraserBtn">⬜ Eraser</button>
+    <button class="btn btn-clear"  id="clearBtn" >🗑 Clear All</button>
+  </div>
+</header>
+
+<!-- ═══════════════════════════════════ MAIN ════════════════════════════════ -->
+<div class="main">
+  <canvas id="board"></canvas>
+
+  <div class="sidebar">
+
+    <!-- connection status -->
+    <div class="sb-section">
+      <div class="sb-title">WebSocket</div>
+      <div class="conn-row">
+        <div class="dot dot-yellow" id="connDot"></div>
+        <span id="connText">Connecting…</span>
+      </div>
+    </div>
+
+    <!-- cluster nodes -->
+    <div class="sb-section">
+      <div class="sb-title">Cluster Nodes</div>
+      <div id="nodeList"><div style="color:#475569;font-size:.72rem">Loading…</div></div>
+    </div>
+
+    <!-- event log -->
+    <div class="sb-section" style="flex:1;display:flex;flex-direction:column;overflow:hidden;border-bottom:none;">
+      <div class="sb-title">Event Log</div>
+      <div class="log-wrap" id="logWrap"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ SCRIPT ══════════════════════════════ -->
+<script>
+'use strict';
+
+// ── canvas setup ──────────────────────────────────────────────────────────────
+const canvas = document.getElementById('board');
+const ctx    = canvas.getContext('2d');
+
+function resizeCanvas() {
+  const rect  = canvas.getBoundingClientRect();
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  canvas.width  = rect.width;
+  canvas.height = rect.height;
+  ctx.putImageData(imgData, 0, 0);
+  ctx.lineCap  = 'round';
+  ctx.lineJoin = 'round';
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+// white background
+ctx.fillStyle = '#ffffff';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+// ── toolbar ───────────────────────────────────────────────────────────────────
+const COLORS = ['#111827','#ef4444','#f97316','#eab308','#22c55e',
+                '#3b82f6','#a855f7','#ec4899','#ffffff'];
+let activeColor = COLORS[0];
+let activeSize  = 5;
+let erasing     = false;
+
+const swatchContainer = document.getElementById('swatches');
+COLORS.forEach(c => {
+  const el = document.createElement('div');
+  el.className = 'color-swatch' + (c === activeColor ? ' active' : '');
+  el.style.background = c;
+  if (c === '#ffffff') el.style.boxShadow = 'inset 0 0 0 1px #555';
+  el.addEventListener('click', () => {
+    document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+    el.classList.add('active');
+    activeColor = c;
+    erasing     = false;
+    eraserBtn.classList.remove('active');
+  });
+  swatchContainer.appendChild(el);
+});
+
+const sizeRange  = document.getElementById('sizeRange');
+const sizeLabel  = document.getElementById('sizeLabel');
+const eraserBtn  = document.getElementById('eraserBtn');
+const clearBtn   = document.getElementById('clearBtn');
+
+sizeRange.addEventListener('input', () => {
+  activeSize = parseInt(sizeRange.value, 10);
+  sizeLabel.textContent = activeSize;
+});
+
+eraserBtn.addEventListener('click', () => {
+  erasing = !erasing;
+  eraserBtn.classList.toggle('active', erasing);
+});
+
+clearBtn.addEventListener('click', () => {
+  const clearStroke = { clear: true, points: [], color: '', size: 0, erase: false };
+  markSent(clearStroke);
+  wsSend({ type: 'stroke', data: clearStroke });
+  addLog('Clear All sent to cluster', 'log-info');
+});
+
+// ── drawing ───────────────────────────────────────────────────────────────────
+let isDown    = false;
+let currPath  = [];
+
+function ptFromMouse(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+function ptFromTouch(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.touches[0].clientX - r.left, y: e.touches[0].clientY - r.top };
+}
+
+function clearCanvas() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawStroke(pts, color, size, erase) {
+  if (pts.length < 2) return;
+  ctx.save();
+  // Eraser uses white paint (not destination-out) so canvas replays correctly on init
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = erase ? '#ffffff' : color;
+  ctx.lineWidth   = size;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function onDown(pt)  { isDown = true; currPath = [pt]; }
+function onMove(pt)  { if (!isDown) return; currPath.push(pt); drawStroke(currPath, activeColor, activeSize, erasing); }
+function onUp()      {
+  if (!isDown) return;
+  isDown = false;
+  if (currPath.length < 2) { currPath = []; return; }
+  const stroke = { points: [...currPath], color: activeColor, size: activeSize, erase: erasing };
+  currPath = [];
+  markSent(stroke);
+  wsSend({ type: 'stroke', data: stroke });
+}
+
+canvas.addEventListener('mousedown',  e => onDown(ptFromMouse(e)));
+canvas.addEventListener('mousemove',  e => onMove(ptFromMouse(e)));
+canvas.addEventListener('mouseup',    onUp);
+canvas.addEventListener('mouseleave', onUp);
+
+canvas.addEventListener('touchstart', e => { e.preventDefault(); onDown(ptFromTouch(e)); }, { passive: false });
+canvas.addEventListener('touchmove',  e => { e.preventDefault(); onMove(ptFromTouch(e)); }, { passive: false });
+canvas.addEventListener('touchend',   e => { e.preventDefault(); onUp(); },                 { passive: false });
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+const GW_WS   = `ws://${location.hostname}:3000`;
+const GW_HTTP = `http://${location.hostname}:3000`;
+
+let ws              = null;
+let reconnectTimer  = null;
+let pendingStrokes  = [];   // buffer while disconnected
+
+// Dedup: keep a small window of recently-sent stroke fingerprints so the
+// echo broadcast from the gateway doesn't repaint strokes we already drew.
+const sentFingerprints = [];
+const DEDUP_WINDOW = 30;
+
+function strokeFingerprint(s) {
+  if (s.clear) return 'CLEAR';
+  const pts = s.points || [];
+  const first = pts[0]  ? `${Math.round(pts[0].x)},${Math.round(pts[0].y)}`   : '';
+  const last  = pts[pts.length-1] ? `${Math.round(pts[pts.length-1].x)},${Math.round(pts[pts.length-1].y)}` : '';
+  return `${s.color}|${s.size}|${s.erase}|${pts.length}|${first}|${last}`;
+}
+
+function markSent(stroke) {
+  sentFingerprints.push(strokeFingerprint(stroke));
+  if (sentFingerprints.length > DEDUP_WINDOW) sentFingerprints.shift();
+}
+
+function isEcho(stroke) {
+  const fp = strokeFingerprint(stroke);
+  const idx = sentFingerprints.indexOf(fp);
+  if (idx !== -1) { sentFingerprints.splice(idx, 1); return true; }
+  return false;
+}
+
+function setConnStatus(status) {
+  const dot  = document.getElementById('connDot');
+  const text = document.getElementById('connText');
+  dot.className = 'dot ' + { connected:'dot-green', connecting:'dot-yellow', disconnected:'dot-red' }[status];
+  text.textContent = { connected:'Connected', connecting:'Connecting…', disconnected:'Disconnected – retrying' }[status];
+}
+
+function wsSend(payload) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(payload));
+  } else {
+    pendingStrokes.push(payload);
+  }
+}
+
+function flushPending() {
+  while (pendingStrokes.length && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(pendingStrokes.shift()));
+  }
+}
+
+function connect() {
+  setConnStatus('connecting');
+  ws = new WebSocket(GW_WS);
+
+  ws.onopen = () => {
+    setConnStatus('connected');
+    addLog('WebSocket connected to gateway', 'log-commit');
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    flushPending();
+  };
+
+  ws.onmessage = ({ data }) => {
+    let msg;
+    try { msg = JSON.parse(data); } catch { return; }
+
+    if (msg.type === 'init') {
+      // Replay entire committed log → repaint canvas
+      clearCanvas();
+      const entries = msg.entries || [];
+      entries.forEach(e => {
+        if (!e.stroke) return;
+        const s = e.stroke;
+        if (s.clear) { clearCanvas(); }
+        else { drawStroke(s.points, s.color, s.size, s.erase); }
+      });
+      addLog(`Canvas synced — ${entries.length} committed stroke(s)`, 'log-commit');
+    } else if (msg.type === 'stroke') {
+      const s = msg.data;
+      if (isEcho(s)) return;   // already drew this locally
+      if (s.clear) {
+        clearCanvas();
+        addLog('Canvas cleared by another user', 'log-info');
+      } else {
+        drawStroke(s.points, s.color, s.size, s.erase);
+      }
+    }
+  };
+
+  ws.onclose = () => {
+    setConnStatus('disconnected');
+    addLog('WebSocket disconnected — reconnecting in 1.5 s', 'log-failover');
+    reconnectTimer = setTimeout(connect, 1500);
+  };
+
+  ws.onerror = () => ws.close();
+}
+
+connect();
+
+// ── Cluster dashboard ─────────────────────────────────────────────────────────
+function addLog(msg, cls = '') {
+  const wrap = document.getElementById('logWrap');
+  const el   = document.createElement('div');
+  el.className = 'log-entry ' + cls;
+  el.textContent = `${new Date().toLocaleTimeString()} ${msg}`;
+  wrap.prepend(el);
+  if (wrap.children.length > 60) wrap.removeChild(wrap.lastChild);
+}
+
+let prevLeader = null;
+
+async function fetchCluster() {
+  try {
+    const res   = await fetch(`${GW_HTTP}/cluster-state`);
+    if (!res.ok) return;
+    const nodes = await res.json();
+    const list  = document.getElementById('nodeList');
+    list.innerHTML = '';
+
+    nodes.forEach(node => {
+      const role  = node.role || 'down';
+      const card  = document.createElement('div');
+      card.className = 'node-card';
+      card.innerHTML = `
+        <div class="node-row">
+          <span class="node-id">${node.id || '?'}</span>
+          <span class="badge b-${role}">${role}</span>
+        </div>
+        <div class="node-meta">
+          Term: ${node.term ?? '—'} &nbsp;|&nbsp;
+          Log: ${node.logLength ?? '—'} &nbsp;|&nbsp;
+          Commit: ${node.commitIndex ?? '—'}
+        </div>`;
+      list.appendChild(card);
+
+      if (role === 'leader' && node.id !== prevLeader) {
+        addLog(`New LEADER elected: ${node.id} (term ${node.term})`, 'log-election');
+        prevLeader = node.id;
+      }
+      if (role === 'down') {
+        addLog(`Node DOWN: ${node.id}`, 'log-failover');
+      }
+    });
+  } catch { /* gateway not ready yet */ }
+}
+
+setInterval(fetchCluster, 1000);
+fetchCluster();
+</script>
+
+</body>
+</html>
